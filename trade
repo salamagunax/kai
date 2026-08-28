@@ -1,0 +1,389 @@
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local CoreGui = game:GetService("CoreGui")
+local UserInputService = game:GetService("UserInputService")
+local LocalPlayer = Players.LocalPlayer
+
+local invModule = require(LocalPlayer.PlayerScripts.Ui.inventory)
+local remotes = ReplicatedStorage:WaitForChild("remotes")
+local AddItemEvent = remotes:WaitForChild("addItemToTradeFolder")
+local SendTradeReq = remotes:WaitForChild("sendTradeRequest")
+
+-- ใช้งานรีโมตตรงเป้าหมายที่คุณแจ้งมา
+local AcceptRemote = remotes:WaitForChild("playerAcceptTrade")
+
+local SelectedCategories = { weapons = true, helmets = true, chests = true, abilities = true }
+local SelectedRarities = { common = true, uncommon = true, rare = true, epic = true, legendary = true, ultimate = true }
+
+local CategoryMap = { 
+    ["weapons"] = "weapon", 
+    ["helmets"] = "helmet", 
+    ["chests"] = "chest", 
+    ["abilities"] = "ability" 
+}
+
+local SelectedTargetPlayer = nil
+local AutoLoopActive = false
+
+local guiName = "CompactTradeUI_ExactAccept"
+local uiParent = pcall(function() return CoreGui.Name end) and CoreGui or LocalPlayer:WaitForChild("PlayerGui")
+if uiParent:FindFirstChild(guiName) then uiParent[guiName]:Destroy() end
+
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = guiName
+ScreenGui.Parent = uiParent
+
+local MainFrame = Instance.new("Frame")
+MainFrame.Size = UDim2.new(0, 340, 0, 480)
+MainFrame.Position = UDim2.new(0.5, -170, 0.5, -240)
+MainFrame.BackgroundColor3 = Color3.fromRGB(25, 25, 30)
+MainFrame.BorderSizePixel = 0
+MainFrame.Parent = ScreenGui
+Instance.new("UICorner", MainFrame).CornerRadius = UDim.new(0, 8)
+
+local Title = Instance.new("TextLabel")
+Title.Size = UDim2.new(1, 0, 0, 28)
+Title.BackgroundTransparency = 1
+Title.Text = "⚡ Safe Auto Trade (Exact Accept Fix)"
+Title.TextColor3 = Color3.fromRGB(255, 255, 255)
+Title.TextSize = 11
+Title.Font = Enum.Font.GothamBold
+Title.Parent = MainFrame
+
+-- ฟังก์ชันลาก UI
+local dragging, dragInput, dragStart, startPos
+Title.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = true; dragStart = input.Position; startPos = MainFrame.Position
+        input.Changed:Connect(function() if input.UserInputState == Enum.UserInputState.End then dragging = false end end)
+    end
+end)
+Title.InputChanged:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then dragInput = input end
+end)
+UserInputService.InputChanged:Connect(function(input)
+    if input == dragInput and dragging then
+        local delta = input.Position - dragStart
+        MainFrame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+    end
+end)
+
+local StatusLabel = Instance.new("TextLabel")
+StatusLabel.Size = UDim2.new(1, -16, 0, 35)
+StatusLabel.Position = UDim2.new(0, 8, 0, 28)
+StatusLabel.BackgroundColor3 = Color3.fromRGB(35, 35, 42)
+StatusLabel.TextColor3 = Color3.fromRGB(220, 220, 220)
+StatusLabel.TextSize = 10
+StatusLabel.Font = Enum.Font.Gotham
+StatusLabel.TextWrapped = true
+StatusLabel.TextXAlignment = Enum.TextXAlignment.Left
+StatusLabel.TextYAlignment = Enum.TextYAlignment.Top
+StatusLabel.Text = "Status: พร้อมใช้งาน (ใช้ playerAcceptTrade ตรงๆ)"
+StatusLabel.Parent = MainFrame
+Instance.new("UICorner", StatusLabel).CornerRadius = UDim.new(0, 6)
+
+local PlayerBtn = Instance.new("TextButton")
+PlayerBtn.Size = UDim2.new(1, -16, 0, 22)
+PlayerBtn.Position = UDim2.new(0, 8, 0, 68)
+PlayerBtn.BackgroundColor3 = Color3.fromRGB(45, 45, 52)
+PlayerBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+PlayerBtn.Text = "👤 เลือกผู้เล่นที่จะเทรด"
+PlayerBtn.Font = Enum.Font.GothamSemibold
+PlayerBtn.TextSize = 10
+PlayerBtn.Parent = MainFrame
+Instance.new("UICorner", PlayerBtn).CornerRadius = UDim.new(0, 6)
+
+local PlayerScroll = Instance.new("ScrollingFrame")
+PlayerScroll.Size = UDim2.new(1, -16, 0, 65)
+PlayerScroll.Position = UDim2.new(0, 8, 0, 93)
+PlayerScroll.BackgroundColor3 = Color3.fromRGB(30, 30, 35)
+PlayerScroll.BorderSizePixel = 0
+PlayerScroll.Visible = false
+PlayerScroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+PlayerScroll.ZIndex = 5
+PlayerScroll.Parent = MainFrame
+Instance.new("UICorner", PlayerScroll).CornerRadius = UDim.new(0, 6)
+local UIList = Instance.new("UIListLayout")
+UIList.SortOrder = Enum.SortOrder.LayoutOrder
+UIList.Parent = PlayerScroll
+
+local function RefreshPlayers()
+    for _, child in ipairs(PlayerScroll:GetChildren()) do if child:IsA("TextButton") then child:Destroy() end end
+    local count = 0
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LocalPlayer then
+            count = count + 1
+            local b = Instance.new("TextButton")
+            b.Size = UDim2.new(1, 0, 0, 20)
+            b.BackgroundColor3 = Color3.fromRGB(50, 50, 60)
+            b.TextColor3 = Color3.fromRGB(255, 255, 255)
+            b.Text = "• " .. p.Name
+            b.Font = Enum.Font.Gotham
+            b.TextSize = 10
+            b.ZIndex = 6
+            b.Parent = PlayerScroll
+            b.MouseButton1Click:Connect(function()
+                SelectedTargetPlayer = p
+                PlayerBtn.Text = "🎯 เป้าหมาย: " .. p.Name
+                PlayerScroll.Visible = false
+            end)
+        end
+    end
+    PlayerScroll.CanvasSize = UDim2.new(0, 0, 0, count * 20)
+end
+
+PlayerBtn.MouseButton1Click:Connect(function() RefreshPlayers(); PlayerScroll.Visible = not PlayerScroll.Visible end)
+
+local CatContainer = Instance.new("Frame")
+CatContainer.Size = UDim2.new(1, -16, 0, 22)
+CatContainer.Position = UDim2.new(0, 8, 0, 122)
+CatContainer.BackgroundTransparency = 1
+CatContainer.Parent = MainFrame
+
+local function CreateToggle(name, key, posX, width)
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(0, width, 1, 0)
+    btn.Position = UDim2.new(0, posX, 0, 0)
+    btn.BackgroundColor3 = SelectedCategories[key] and Color3.fromRGB(40, 140, 70) or Color3.fromRGB(60, 60, 70)
+    btn.Text = name
+    btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    btn.Font = Enum.Font.GothamBold
+    btn.TextSize = 10
+    btn.Parent = CatContainer
+    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 5)
+    
+    btn.MouseButton1Click:Connect(function()
+        SelectedCategories[key] = not SelectedCategories[key]
+        btn.BackgroundColor3 = SelectedCategories[key] and Color3.fromRGB(40, 140, 70) or Color3.fromRGB(60, 60, 70)
+    end)
+end
+
+CreateToggle("อาวุธ", "weapons", 0, 75)
+CreateToggle("หมวก", "helmets", 80, 75)
+CreateToggle("เกราะ", "chests", 160, 75)
+CreateToggle("สกิล", "abilities", 240, 75)
+
+local function IsEquipped(itemData)
+    if type(itemData) ~= "table" then return false end
+    local eq = itemData.equipped
+    if eq ~= nil and eq ~= false then
+        if type(eq) == "table" and next(eq) == nil then return false end
+        return true
+    end
+    return false
+end
+
+-- สั่งยิง playerAcceptTrade แค่ครั้งเดียวพอ ไม่ยิงรัว
+local function TriggerAccept()
+    pcall(function()
+        if AcceptRemote:IsA("RemoteEvent") then
+            AcceptRemote:FireServer()
+        elseif AcceptRemote:IsA("RemoteFunction") then
+            AcceptRemote:InvokeServer()
+        end
+    end)
+end
+
+local function ParseItemID(itemKey)
+    local strKey = tostring(itemKey)
+    local num = string.match(strKey, "%d+")
+    return tonumber(num)
+end
+
+local function IsTradeInterfaceOpen()
+    local tradeGui = LocalPlayer.PlayerGui:FindFirstChild("tradingGui")
+    if tradeGui and tradeGui:IsA("ScreenGui") and tradeGui.Enabled then
+        return true
+    end
+    return false
+end
+
+local function ProcessSingleTrade()
+    if not IsTradeInterfaceOpen() then
+        StatusLabel.Text = "❌ ยกเลิก: tradingGui ไม่แสดงผล!"
+        return false
+    end
+
+    local myInventory = invModule.GetPlayerInvy()
+    local itemsAddedCount = 0
+    local MaxItemsLimit = 30
+    
+    StatusLabel.Text = "⏳ กำลังใส่ไอเทมตามเงื่อนไข..."
+
+    for catKey, isSelected in pairs(SelectedCategories) do
+        if isSelected and myInventory[catKey] then
+            local remoteCat = CategoryMap[catKey] or catKey
+            for itemKey, itemData in pairs(myInventory[catKey]) do
+                if itemsAddedCount >= MaxItemsLimit then break end
+                
+                if not IsTradeInterfaceOpen() then
+                    StatusLabel.Text = "⚠️ tradingGui ถูกปิดระหว่างส่งของ!"
+                    return false
+                end
+
+                if not IsEquipped(itemData) then
+                    local itemID = ParseItemID(itemKey)
+                    local pass = false
+                    
+                    if catKey == "abilities" then
+                        pass = true
+                    else
+                        local rarity = itemData.rarity or itemData.Rarity or "common"
+                        local curRarity = tostring(rarity):lower()
+                        if SelectedRarities[curRarity] then pass = true end
+                    end
+
+                    if pass and itemID then
+                        pcall(function() AddItemEvent:FireServer(remoteCat, itemID) end)
+                        itemsAddedCount = itemsAddedCount + 1
+                        StatusLabel.Text = string.format("📊 ใส่ไอเทมแล้ว: %d ชิ้น", itemsAddedCount)
+                        task.wait(0.1)
+                    end
+                end
+            end
+        end
+        if itemsAddedCount >= MaxItemsLimit then break end
+    end
+
+    if itemsAddedCount > 0 then
+        StatusLabel.Text = "✅ ใส่ของครบแล้ว กำลังกด Accept..."
+        task.wait(0.6)
+        TriggerAccept()
+    else
+        StatusLabel.Text = "⚠️ ไม่พบไอเทมที่ตรงเงื่อนไขความแรร์ในรอบนี้"
+    end
+
+    StatusLabel.Text = "🔒 กำลังรอจนกว่าหน้าต่างเทรดจะปิดลง..."
+    while AutoLoopActive and IsTradeInterfaceOpen() do
+        task.wait(0.5)
+    end
+    
+    StatusLabel.Text = "✨ การเทรดรอบนี้เสร็จสิ้น (หน้าต่างปิดแล้ว)"
+    return true
+end
+
+local AutoLoopBtn = Instance.new("TextButton")
+AutoLoopBtn.Size = UDim2.new(1, -16, 0, 28)
+AutoLoopBtn.Position = UDim2.new(0, 8, 0, 152)
+AutoLoopBtn.BackgroundColor3 = Color3.fromRGB(40, 160, 70)
+AutoLoopBtn.Text = "🔄 เริ่มระบบ Safe Auto Loop (Off)"
+AutoLoopBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+AutoLoopBtn.Font = Enum.Font.GothamBold
+AutoLoopBtn.TextSize = 10
+AutoLoopBtn.Parent = MainFrame
+Instance.new("UICorner", AutoLoopBtn).CornerRadius = UDim.new(0, 6)
+
+AutoLoopBtn.MouseButton1Click:Connect(function()
+    if not SelectedTargetPlayer then
+        StatusLabel.Text = "❌ กรุณาเลือกผู้เล่นเป้าหมายก่อน!"
+        return
+    end
+
+    AutoLoopActive = not AutoLoopActive
+    if AutoLoopActive then
+        AutoLoopBtn.BackgroundColor3 = Color3.fromRGB(180, 60, 60)
+        AutoLoopBtn.Text = "⏹ หยุดระบบ Safe Auto Loop (On)"
+        
+        task.spawn(function()
+            while AutoLoopActive do
+                StatusLabel.Text = "📤 ส่งคำขอหา: " .. SelectedTargetPlayer.Name
+                
+                local ok = pcall(function()
+                    local success = pcall(function() SendTradeReq:InvokeServer(SelectedTargetPlayer) end)
+                    if not success then
+                        SendTradeReq:InvokeServer(SelectedTargetPlayer.Name)
+                    end
+                end)
+                
+                if ok then
+                    StatusLabel.Text = "⏳ รอ tradingGui เด้งขึ้นมา..."
+                    
+                    local waitTimer = 0
+                    local tradeOpened = false
+                    
+                    while AutoLoopActive and not tradeOpened and waitTimer < 30 do
+                        if IsTradeInterfaceOpen() then
+                            tradeOpened = true
+                            break
+                        end
+                        task.wait(0.5)
+                        waitTimer = waitTimer + 0.5
+                    end
+                    
+                    if tradeOpened and AutoLoopActive then
+                        ProcessSingleTrade()
+                    else
+                        StatusLabel.Text = "⏳ หมดเวลา: อีกฝ่ายไม่รับคำขอ"
+                    end
+                else
+                    StatusLabel.Text = "❌ ส่งคำขอไม่สำเร็จ ลองใหม่ใน 3 วิ..."
+                    task.wait(3)
+                end
+                
+                task.wait(2)
+            end
+        end)
+    else
+        AutoLoopBtn.BackgroundColor3 = Color3.fromRGB(40, 160, 70)
+        AutoLoopBtn.Text = "🔄 เริ่มระบบ Safe Auto Loop (Off)"
+        StatusLabel.Text = "⏹ หยุดการทำงานเรียบร้อย"
+    end
+end)
+
+local RarityLabel = Instance.new("TextLabel")
+RarityLabel.Size = UDim2.new(1, -16, 0, 14)
+RarityLabel.Position = UDim2.new(0, 8, 0, 190)
+RarityLabel.BackgroundTransparency = 1
+RarityLabel.Text = "เลือกความแรร์ (เฉพาะหมวดอุปกรณ์):"
+RarityLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
+RarityLabel.TextSize = 10
+RarityLabel.Font = Enum.Font.GothamBold
+RarityLabel.TextXAlignment = Enum.TextXAlignment.Left
+RarityLabel.Parent = MainFrame
+
+local RarityContainer = Instance.new("Frame")
+RarityContainer.Size = UDim2.new(1, -16, 0, 48)
+RarityContainer.Position = UDim2.new(0, 8, 0, 206)
+RarityContainer.BackgroundTransparency = 1
+RarityContainer.Parent = MainFrame
+
+local function CreateRarityToggle(name, key, posX, posY, width, height)
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(0, width, 0, height)
+    btn.Position = UDim2.new(0, posX, 0, posY)
+    btn.BackgroundColor3 = SelectedRarities[key] and Color3.fromRGB(40, 120, 180) or Color3.fromRGB(60, 60, 70)
+    btn.Text = name
+    btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    btn.Font = Enum.Font.GothamBold
+    btn.TextSize = 10
+    btn.Parent = RarityContainer
+    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 5)
+    
+    btn.MouseButton1Click:Connect(function()
+        SelectedRarities[key] = not SelectedRarities[key]
+        btn.BackgroundColor3 = SelectedRarities[key] and Color3.fromRGB(40, 120, 180) or Color3.fromRGB(60, 60, 70)
+    end)
+end
+
+CreateRarityToggle("Common", "common", 0, 0, 100, 20)
+CreateRarityToggle("Uncommon", "uncommon", 105, 0, 100, 20)
+CreateRarityToggle("Rare", "rare", 210, 0, 114, 20)
+CreateRarityToggle("Epic", "epic", 0, 24, 100, 20)
+CreateRarityToggle("Legendary", "legendary", 105, 24, 100, 20)
+CreateRarityToggle("Ultimate", "ultimate", 210, 24, 114, 20)
+
+local CloseBtn = Instance.new("TextButton")
+CloseBtn.Size = UDim2.new(1, -16, 0, 26)
+CloseBtn.Position = UDim2.new(0, 8, 0, 264)
+CloseBtn.BackgroundColor3 = Color3.fromRGB(160, 45, 45)
+CloseBtn.Text = "❌ ปิดเมนู (Close)"
+CloseBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+CloseBtn.Font = Enum.Font.GothamBold
+CloseBtn.TextSize = 10
+CloseBtn.Parent = MainFrame
+Instance.new("UICorner", CloseBtn).CornerRadius = UDim.new(0, 6)
+
+CloseBtn.MouseButton1Click:Connect(function()
+    AutoLoopActive = false
+    ScreenGui:Destroy()
+end)
