@@ -9,13 +9,14 @@ local remotes = ReplicatedStorage:WaitForChild("remotes")
 local AddItemEvent = remotes:WaitForChild("addItemToTradeFolder")
 local SendTradeReq = remotes:WaitForChild("sendTradeRequest")
 local AcceptRemote = remotes:WaitForChild("playerAcceptTrade")
+local SellItemEvent = remotes:WaitForChild("sellItemEvent") -- เพิ่มรีโมทสำหรับขายไอเทม
 
 -- ระบบจัดการ Config (บันทึก/โหลดไฟล์ รวมถึงจำชื่อเป้าหมายด้วย)
 local ConfigFileName = "CompactTradeUI_Config.json"
 local SelectedCategories = { weapons = true, helmets = true, chests = true, abilities = true }
 local SelectedRarities = { common = true, uncommon = true, rare = true, epic = true, legendary = true, ultimate = true }
 local AutoLoopSavedState = false
-local SavedTargetName = "" -- เพิ่มตัวแปรจำชื่อเป้าหมาย
+local SavedTargetName = ""
 
 local CategoryButtons = {}
 local RarityButtons = {}
@@ -82,7 +83,7 @@ Instance.new("UICorner", MainFrame).CornerRadius = UDim.new(0, 8)
 local Title = Instance.new("TextLabel")
 Title.Size = UDim2.new(1, 0, 0, 28)
 Title.BackgroundTransparency = 1
-Title.Text = "⚡ Safe Auto Trade (Auto-Save Config)"
+Title.Text = "⚡ Safe Auto Trade (Auto-Sell & Realtime Log)"
 Title.TextColor3 = Color3.fromRGB(255, 255, 255)
 Title.TextSize = 11
 Title.Font = Enum.Font.GothamBold
@@ -173,7 +174,6 @@ end
 
 PlayerBtn.MouseButton1Click:Connect(function() RefreshPlayers(); PlayerScroll.Visible = not PlayerScroll.Visible end)
 
--- พยายามค้นหาผู้เล่นจากชื่อที่บันทึกไว้ตอนเปิดเกมใหม่
 if SavedTargetName ~= "" then
     local foundP = Players:FindFirstChild(SavedTargetName)
     if foundP then
@@ -248,6 +248,63 @@ local function IsTradeInterfaceOpen()
     return false
 end
 
+-- ฟังก์ชันนับจำนวนไอเทมในกระเป๋าแบบเรียลไทม์ และเช็คว่าเต็ม 300 หรือยัง
+local function GetInventoryCount()
+    local success, myInventory = pcall(function()
+        return invModule.GetPlayerInvy()
+    end)
+    if not success or not myInventory then return 0, 300 end
+
+    local totalCount = 0
+    for catKey, catData in pairs(myInventory) do
+        if type(catData) == "table" then
+            for _, _ in pairs(catData) do
+                totalCount = totalCount + 1
+            end
+        end
+    end
+    return totalCount, 300
+end
+
+-- ฟังก์ชันเคลียร์พื้นที่กระเป๋าโดยการขายไอเทมทิ้ง 1 ชิ้น (ถ้าเต็ม 300)
+local function AutoClearSpace()
+    local currentCount, maxCount = GetInventoryCount()
+    StatusLabel.Text = string.format("📦 เช็คกระเป๋า: %d/%d ชิ้น", currentCount, maxCount)
+    
+    if currentCount >= maxCount then
+        StatusLabel.Text = "⚠️ กระเป๋าเต็ม (300/300) กำลังขายทิ้ง 1 ชิ้น..."
+        local myInventory = invModule.GetPlayerInvy()
+        
+        -- วนหาไอเทมชิ้นแรกที่ไม่ได้สวมใส่เพื่อเอามาขายทิ้ง
+        for catKey, catData in pairs(myInventory) do
+            if type(catData) == "table" then
+                for itemKey, itemData in pairs(catData) do
+                    if not IsEquipped(itemData) then
+                        local itemID = ParseItemID(itemKey)
+                        if itemID then
+                            local remoteCat = CategoryMap[catKey] or catKey
+                            local sellArgs = {
+                                {
+                                    helmet = remoteCat == "helmet" and {itemID} or {},
+                                    ability = remoteCat == "ability" and {itemID} or {},
+                                    chest = remoteCat == "chest" and {itemID} or {},
+                                    weapon = remoteCat == "weapon" and {itemID} or {}
+                                }
+                            }
+                            pcall(function()
+                                SellItemEvent:FireServer(unpack(sellArgs))
+                            end)
+                            task.wait(0.5)
+                            return true
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return false
+end
+
 local function ProcessSingleTrade()
     if not IsTradeInterfaceOpen() then return false end
 
@@ -255,7 +312,8 @@ local function ProcessSingleTrade()
     local itemsAddedCount = 0
     local MaxItemsLimit = 30
     
-    StatusLabel.Text = "⏳ กำลังใส่ไอเทมตามเงื่อนไข..."
+    local cur, max = GetInventoryCount()
+    StatusLabel.Text = string.format("⏳ กำลังใส่ไอเทม (เป๋า: %d/%d)...", cur, max)
 
     for catKey, isSelected in pairs(SelectedCategories) do
         if isSelected and myInventory[catKey] then
@@ -279,7 +337,7 @@ local function ProcessSingleTrade()
                     if pass and itemID then
                         pcall(function() AddItemEvent:FireServer(remoteCat, itemID) end)
                         itemsAddedCount = itemsAddedCount + 1
-                        StatusLabel.Text = string.format("📊 ใส่ไอเทมแล้ว: %d ชิ้น", itemsAddedCount)
+                        StatusLabel.Text = string.format("📊 ใส่ไอเทมแล้ว: %d ชิ้น (เป๋า: %d/%d)", itemsAddedCount, GetInventoryCount())
                         task.wait(0.1)
                     end
                 end
@@ -324,7 +382,9 @@ local function ToggleAutoLoop(state)
         
         task.spawn(function()
             while AutoLoopActive do
-                -- ตรวจสอบและค้นหาเป้าหมายใหม่หากหลุดหรือเข้าเกมใหม่
+                -- เช็คก่อนว่ากระเป๋าเต็ม 300 หรือไม่ ถ้าเต็มให้ขายทิ้งเคลียร์ที่ว่างก่อน
+                AutoClearSpace()
+
                 if not SelectedTargetPlayer and SavedTargetName ~= "" then
                     SelectedTargetPlayer = Players:FindFirstChild(SavedTargetName)
                     if SelectedTargetPlayer then
@@ -333,14 +393,14 @@ local function ToggleAutoLoop(state)
                 end
 
                 if SelectedTargetPlayer then
-                    StatusLabel.Text = "📤 กำลังส่งคำขอหา: " .. SelectedTargetPlayer.Name
+                    local cur, max = GetInventoryCount()
+                    StatusLabel.Text = string.format("📤 ส่งคำขอหา: %s [เป๋า: %d/%d]", SelectedTargetPlayer.Name, cur, max)
                     
                     pcall(function()
                         local success = pcall(function() SendTradeReq:InvokeServer(SelectedTargetPlayer) end)
                         if not success then SendTradeReq:InvokeServer(SelectedTargetPlayer.Name) end
                     end)
                     
-                    -- ระบบเช็คหน้าต่างเทรด (Timeout 5 วินาที ถ้าอีกฝ่ายไม่กดรับ จะวนส่งคำขอใหม่ทันที)
                     local waitTimer = 0
                     local tradeOpened = false
                     while AutoLoopActive and not tradeOpened and waitTimer < 5 do
@@ -414,7 +474,6 @@ CreateRarityToggle("Epic", "epic", 0, 24, 100, 20)
 CreateRarityToggle("Legendary", "legendary", 105, 24, 100, 20)
 CreateRarityToggle("Ultimate", "ultimate", 210, 24, 114, 20)
 
--- ถ้าเปิด Auto Loop ค้างไว้ หรือเข้าเกมใหม่แล้วมี Config เก่า ให้รันต่ออัตโนมัติทันที
 if AutoLoopSavedState then
     task.spawn(function()
         task.wait(1.5)
@@ -429,7 +488,7 @@ CloseBtn.BackgroundColor3 = Color3.fromRGB(160, 45, 45)
 CloseBtn.Text = "❌ ปิดเมนู (Close)"
 CloseBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 CloseBtn.Font = Enum.Font.GothamBold
-CloseBtn.TextSize = 10
+CloseBtn.TextSize= 10
 CloseBtn.Parent = MainFrame
 Instance.new("UICorner", CloseBtn).CornerRadius = UDim.new(0, 6)
 
