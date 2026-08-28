@@ -8,12 +8,39 @@ local invModule = require(LocalPlayer.PlayerScripts.Ui.inventory)
 local remotes = ReplicatedStorage:WaitForChild("remotes")
 local AddItemEvent = remotes:WaitForChild("addItemToTradeFolder")
 local SendTradeReq = remotes:WaitForChild("sendTradeRequest")
-
--- ใช้งานรีโมตตรงเป้าหมายที่คุณแจ้งมา
 local AcceptRemote = remotes:WaitForChild("playerAcceptTrade")
 
+-- ระบบจัดการ Config (บันทึก/โหลดไฟล์)
+local ConfigFileName = "CompactTradeUI_Config.json"
 local SelectedCategories = { weapons = true, helmets = true, chests = true, abilities = true }
 local SelectedRarities = { common = true, uncommon = true, rare = true, epic = true, legendary = true, ultimate = true }
+
+local function SaveConfig()
+    if writefile then
+        local data = {
+            Categories = SelectedCategories,
+            Rarities = SelectedRarities
+        }
+        pcall(function()
+            writefile(ConfigFileName, game:GetService("HttpService"):JSONEncode(data))
+        end)
+    end
+end
+
+local function LoadConfig()
+    if readfile and pcall(function() readfile(ConfigFileName) end) then
+        pcall(function()
+            local content = readfile(ConfigFileName)
+            local data = game:GetService("HttpService"):JSONDecode(content)
+            if data and type(data) == "table" then
+                if data.Categories then SelectedCategories = data.Categories end
+                if data.Rarities then SelectedRarities = data.Rarities end
+            end
+        end)
+    end
+end
+
+LoadConfig()
 
 local CategoryMap = { 
     ["weapons"] = "weapon", 
@@ -25,7 +52,7 @@ local CategoryMap = {
 local SelectedTargetPlayer = nil
 local AutoLoopActive = false
 
-local guiName = "CompactTradeUI_ExactAccept"
+local guiName = "CompactTradeUI_Configurable"
 local uiParent = pcall(function() return CoreGui.Name end) and CoreGui or LocalPlayer:WaitForChild("PlayerGui")
 if uiParent:FindFirstChild(guiName) then uiParent[guiName]:Destroy() end
 
@@ -44,7 +71,7 @@ Instance.new("UICorner", MainFrame).CornerRadius = UDim.new(0, 8)
 local Title = Instance.new("TextLabel")
 Title.Size = UDim2.new(1, 0, 0, 28)
 Title.BackgroundTransparency = 1
-Title.Text = "⚡ Safe Auto Trade (Exact Accept Fix)"
+Title.Text = "⚡ Safe Auto Trade (Auto-Save Config)"
 Title.TextColor3 = Color3.fromRGB(255, 255, 255)
 Title.TextSize = 11
 Title.Font = Enum.Font.GothamBold
@@ -78,7 +105,7 @@ StatusLabel.Font = Enum.Font.Gotham
 StatusLabel.TextWrapped = true
 StatusLabel.TextXAlignment = Enum.TextXAlignment.Left
 StatusLabel.TextYAlignment = Enum.TextYAlignment.Top
-StatusLabel.Text = "Status: พร้อมใช้งาน (ใช้ playerAcceptTrade ตรงๆ)"
+StatusLabel.Text = "Status: โหลด Config เดิมเรียบร้อยแล้ว"
 StatusLabel.Parent = MainFrame
 Instance.new("UICorner", StatusLabel).CornerRadius = UDim.new(0, 6)
 
@@ -155,6 +182,7 @@ local function CreateToggle(name, key, posX, width)
     btn.MouseButton1Click:Connect(function()
         SelectedCategories[key] = not SelectedCategories[key]
         btn.BackgroundColor3 = SelectedCategories[key] and Color3.fromRGB(40, 140, 70) or Color3.fromRGB(60, 60, 70)
+        SaveConfig()
     end)
 end
 
@@ -173,7 +201,6 @@ local function IsEquipped(itemData)
     return false
 end
 
--- สั่งยิง playerAcceptTrade แค่ครั้งเดียวพอ ไม่ยิงรัว
 local function TriggerAccept()
     pcall(function()
         if AcceptRemote:IsA("RemoteEvent") then
@@ -199,10 +226,7 @@ local function IsTradeInterfaceOpen()
 end
 
 local function ProcessSingleTrade()
-    if not IsTradeInterfaceOpen() then
-        StatusLabel.Text = "❌ ยกเลิก: tradingGui ไม่แสดงผล!"
-        return false
-    end
+    if not IsTradeInterfaceOpen() then return false end
 
     local myInventory = invModule.GetPlayerInvy()
     local itemsAddedCount = 0
@@ -215,11 +239,7 @@ local function ProcessSingleTrade()
             local remoteCat = CategoryMap[catKey] or catKey
             for itemKey, itemData in pairs(myInventory[catKey]) do
                 if itemsAddedCount >= MaxItemsLimit then break end
-                
-                if not IsTradeInterfaceOpen() then
-                    StatusLabel.Text = "⚠️ tradingGui ถูกปิดระหว่างส่งของ!"
-                    return false
-                end
+                if not IsTradeInterfaceOpen() then return false end
 
                 if not IsEquipped(itemData) then
                     local itemID = ParseItemID(itemKey)
@@ -253,12 +273,9 @@ local function ProcessSingleTrade()
         StatusLabel.Text = "⚠️ ไม่พบไอเทมที่ตรงเงื่อนไขความแรร์ในรอบนี้"
     end
 
-    StatusLabel.Text = "🔒 กำลังรอจนกว่าหน้าต่างเทรดจะปิดลง..."
     while AutoLoopActive and IsTradeInterfaceOpen() do
         task.wait(0.5)
     end
-    
-    StatusLabel.Text = "✨ การเทรดรอบนี้เสร็จสิ้น (หน้าต่างปิดแล้ว)"
     return true
 end
 
@@ -287,39 +304,25 @@ AutoLoopBtn.MouseButton1Click:Connect(function()
         task.spawn(function()
             while AutoLoopActive do
                 StatusLabel.Text = "📤 ส่งคำขอหา: " .. SelectedTargetPlayer.Name
-                
                 local ok = pcall(function()
                     local success = pcall(function() SendTradeReq:InvokeServer(SelectedTargetPlayer) end)
-                    if not success then
-                        SendTradeReq:InvokeServer(SelectedTargetPlayer.Name)
-                    end
+                    if not success then SendTradeReq:InvokeServer(SelectedTargetPlayer.Name) end
                 end)
                 
                 if ok then
-                    StatusLabel.Text = "⏳ รอ tradingGui เด้งขึ้นมา..."
-                    
                     local waitTimer = 0
                     local tradeOpened = false
-                    
                     while AutoLoopActive and not tradeOpened and waitTimer < 30 do
-                        if IsTradeInterfaceOpen() then
-                            tradeOpened = true
-                            break
-                        end
+                        if IsTradeInterfaceOpen() then tradeOpened = true; break end
                         task.wait(0.5)
                         waitTimer = waitTimer + 0.5
                     end
-                    
                     if tradeOpened and AutoLoopActive then
                         ProcessSingleTrade()
-                    else
-                        StatusLabel.Text = "⏳ หมดเวลา: อีกฝ่ายไม่รับคำขอ"
                     end
                 else
-                    StatusLabel.Text = "❌ ส่งคำขอไม่สำเร็จ ลองใหม่ใน 3 วิ..."
                     task.wait(3)
                 end
-                
                 task.wait(2)
             end
         end)
@@ -334,7 +337,7 @@ local RarityLabel = Instance.new("TextLabel")
 RarityLabel.Size = UDim2.new(1, -16, 0, 14)
 RarityLabel.Position = UDim2.new(0, 8, 0, 190)
 RarityLabel.BackgroundTransparency = 1
-RarityLabel.Text = "เลือกความแรร์ (เฉพาะหมวดอุปกรณ์):"
+RarityLabel.Text = "เลือกความแรร์ (บันทึกค่าออโต้):"
 RarityLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
 RarityLabel.TextSize = 10
 RarityLabel.Font = Enum.Font.GothamBold
@@ -362,6 +365,7 @@ local function CreateRarityToggle(name, key, posX, posY, width, height)
     btn.MouseButton1Click:Connect(function()
         SelectedRarities[key] = not SelectedRarities[key]
         btn.BackgroundColor3 = SelectedRarities[key] and Color3.fromRGB(40, 120, 180) or Color3.fromRGB(60, 60, 70)
+        SaveConfig()
     end)
 end
 
