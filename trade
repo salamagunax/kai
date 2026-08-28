@@ -9,9 +9,8 @@ local remotes = ReplicatedStorage:WaitForChild("remotes")
 local AddItemEvent = remotes:WaitForChild("addItemToTradeFolder")
 local SendTradeReq = remotes:WaitForChild("sendTradeRequest")
 local AcceptRemote = remotes:WaitForChild("playerAcceptTrade")
-local SellItemEvent = remotes:WaitForChild("sellItemEvent") -- เพิ่มรีโมทสำหรับขายไอเทม
+local SellItemEvent = remotes:WaitForChild("sellItemEvent")
 
--- ระบบจัดการ Config (บันทึก/โหลดไฟล์ รวมถึงจำชื่อเป้าหมายด้วย)
 local ConfigFileName = "CompactTradeUI_Config.json"
 local SelectedCategories = { weapons = true, helmets = true, chests = true, abilities = true }
 local SelectedRarities = { common = true, uncommon = true, rare = true, epic = true, legendary = true, ultimate = true }
@@ -83,13 +82,12 @@ Instance.new("UICorner", MainFrame).CornerRadius = UDim.new(0, 8)
 local Title = Instance.new("TextLabel")
 Title.Size = UDim2.new(1, 0, 0, 28)
 Title.BackgroundTransparency = 1
-Title.Text = "⚡ Safe Auto Trade (Auto-Sell & Realtime Log)"
+Title.Text = "⚡ Safe Auto Trade (Smart Auto-Sell to 299)"
 Title.TextColor3 = Color3.fromRGB(255, 255, 255)
 Title.TextSize = 11
 Title.Font = Enum.Font.GothamBold
 Title.Parent = MainFrame
 
--- ฟังก์ชันลาก UI
 local dragging, dragInput, dragStart, startPos
 Title.InputBegan:Connect(function(input)
     if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
@@ -248,7 +246,6 @@ local function IsTradeInterfaceOpen()
     return false
 end
 
--- ฟังก์ชันนับจำนวนไอเทมในกระเป๋าแบบเรียลไทม์ และเช็คว่าเต็ม 300 หรือยัง
 local function GetInventoryCount()
     local success, myInventory = pcall(function()
         return invModule.GetPlayerInvy()
@@ -266,43 +263,59 @@ local function GetInventoryCount()
     return totalCount, 300
 end
 
--- ฟังก์ชันเคลียร์พื้นที่กระเป๋าโดยการขายไอเทมทิ้ง 1 ชิ้น (ถ้าเต็ม 300)
-local function AutoClearSpace()
+-- ฟังก์ชันเช็คและขายไอเทมทิ้งจนกว่าจะเหลือ 299/300 (ป้องกันการขายมั่วโดยเช็คความแรร์/ประเภทที่ไม่ต้องการเก็บ)
+local function AutoClearSpaceTo299()
     local currentCount, maxCount = GetInventoryCount()
-    StatusLabel.Text = string.format("📦 เช็คกระเป๋า: %d/%d ชิ้น", currentCount, maxCount)
     
-    if currentCount >= maxCount then
-        StatusLabel.Text = "⚠️ กระเป๋าเต็ม (300/300) กำลังขายทิ้ง 1 ชิ้น..."
+    -- ถ้าเกิน 300 จะทำการวนขายออกจนกว่าจะเหลือ 299 หรือต่ำกว่า
+    while currentCount >= 300 and AutoLoopActive do
+        StatusLabel.Text = string.format("⚠️ เป๋าเกิน (%d/%d) กำลังเคลียร์ขายออกให้เหลือ 299...", currentCount, maxCount)
         local myInventory = invModule.GetPlayerInvy()
+        local soldOne = false
         
-        -- วนหาไอเทมชิ้นแรกที่ไม่ได้สวมใส่เพื่อเอามาขายทิ้ง
         for catKey, catData in pairs(myInventory) do
             if type(catData) == "table" then
                 for itemKey, itemData in pairs(catData) do
                     if not IsEquipped(itemData) then
                         local itemID = ParseItemID(itemKey)
                         if itemID then
-                            local remoteCat = CategoryMap[catKey] or catKey
-                            local sellArgs = {
-                                {
-                                    helmet = remoteCat == "helmet" and {itemID} or {},
-                                    ability = remoteCat == "ability" and {itemID} or {},
-                                    chest = remoteCat == "chest" and {itemID} or {},
-                                    weapon = remoteCat == "weapon" and {itemID} or {}
+                            -- เช็คความแรร์ (ถ้าไม่อยู่ในความแรร์ที่เลือก ให้ขายทิ้งก่อนเพื่อความปลอดภัย)
+                            local rarity = itemData.rarity or itemData.Rarity or "common"
+                            local curRarity = tostring(rarity):lower()
+                            
+                            -- ขายไอเทมที่อยู่นอกเหนือความแรร์ที่เลือก หรือถ้าเลือกหมดทุกอัน จะขายตัว Common/Uncommon ก่อนเพื่อความปลอดภัย
+                            if not SelectedRarities[curRarity] or curRarity == "common" or curRarity == "uncommon" then
+                                local remoteCat = CategoryMap[catKey] or catKey
+                                local sellArgs = {
+                                    {
+                                        helmet = remoteCat == "helmet" and {itemID} or {},
+                                        ability = remoteCat == "ability" and {itemID} or {},
+                                        chest = remoteCat == "chest" and {itemID} or {},
+                                        weapon = remoteCat == "weapon" and {itemID} or {}
+                                    }
                                 }
-                            }
-                            pcall(function()
-                                SellItemEvent:FireServer(unpack(sellArgs))
-                            end)
-                            task.wait(0.5)
-                            return true
+                                
+                                StatusLabel.Text = string.format("🗑️ Log ขายทิ้ง ID: %s (%s)", tostring(itemID), remoteCat)
+                                pcall(function()
+                                    SellItemEvent:FireServer(unpack(sellArgs))
+                                end)
+                                
+                                task.wait(0.4)
+                                soldOne = true
+                                break
+                            end
                         end
                     end
                 end
             end
+            if soldOne then break end
         end
+        
+        -- อัพเดตตัวเลขกระเป๋าหลังขาย
+        currentCount, maxCount = GetInventoryCount()
+        task.wait(0.2)
+        if not soldOne then break end -- ป้องกันติด Loop ถ้าไม่มีของให้ขายแล้วจริงๆ
     end
-    return false
 end
 
 local function ProcessSingleTrade()
@@ -382,8 +395,8 @@ local function ToggleAutoLoop(state)
         
         task.spawn(function()
             while AutoLoopActive do
-                -- เช็คก่อนว่ากระเป๋าเต็ม 300 หรือไม่ ถ้าเต็มให้ขายทิ้งเคลียร์ที่ว่างก่อน
-                AutoClearSpace()
+                -- เช็คและเคลียร์พื้นที่กระเป๋าให้เหลือ 299 ก่อนเริ่มเทรดทุกรอบ
+                AutoClearSpaceTo299()
 
                 if not SelectedTargetPlayer and SavedTargetName ~= "" then
                     SelectedTargetPlayer = Players:FindFirstChild(SavedTargetName)
@@ -488,7 +501,7 @@ CloseBtn.BackgroundColor3 = Color3.fromRGB(160, 45, 45)
 CloseBtn.Text = "❌ ปิดเมนู (Close)"
 CloseBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 CloseBtn.Font = Enum.Font.GothamBold
-CloseBtn.TextSize= 10
+CloseBtn.TextSize = 10
 CloseBtn.Parent = MainFrame
 Instance.new("UICorner", CloseBtn).CornerRadius = UDim.new(0, 6)
 
