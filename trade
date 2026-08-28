@@ -10,16 +10,26 @@ local AddItemEvent = remotes:WaitForChild("addItemToTradeFolder")
 local SendTradeReq = remotes:WaitForChild("sendTradeRequest")
 local AcceptRemote = remotes:WaitForChild("playerAcceptTrade")
 
--- ระบบจัดการ Config (บันทึก/โหลดไฟล์)
+-- ระบบจัดการ Config (บันทึก/โหลดไฟล์ รวมถึงจำชื่อเป้าหมายด้วย)
 local ConfigFileName = "CompactTradeUI_Config.json"
 local SelectedCategories = { weapons = true, helmets = true, chests = true, abilities = true }
 local SelectedRarities = { common = true, uncommon = true, rare = true, epic = true, legendary = true, ultimate = true }
+local AutoLoopSavedState = false
+local SavedTargetName = "" -- เพิ่มตัวแปรจำชื่อเป้าหมาย
+
+local CategoryButtons = {}
+local RarityButtons = {}
+local AutoLoopBtn = nil
+local PlayerBtn = nil
+local SelectedTargetPlayer = nil
 
 local function SaveConfig()
     if writefile then
         local data = {
             Categories = SelectedCategories,
-            Rarities = SelectedRarities
+            Rarities = SelectedRarities,
+            AutoLoopState = AutoLoopSavedState,
+            TargetName = SelectedTargetPlayer and SelectedTargetPlayer.Name or SavedTargetName
         }
         pcall(function()
             writefile(ConfigFileName, game:GetService("HttpService"):JSONEncode(data))
@@ -35,6 +45,8 @@ local function LoadConfig()
             if data and type(data) == "table" then
                 if data.Categories then SelectedCategories = data.Categories end
                 if data.Rarities then SelectedRarities = data.Rarities end
+                if data.AutoLoopState ~= nil then AutoLoopSavedState = data.AutoLoopState end
+                if data.TargetName then SavedTargetName = data.TargetName end
             end
         end)
     end
@@ -49,7 +61,6 @@ local CategoryMap = {
     ["abilities"] = "ability" 
 }
 
-local SelectedTargetPlayer = nil
 local AutoLoopActive = false
 
 local guiName = "CompactTradeUI_Configurable"
@@ -109,7 +120,7 @@ StatusLabel.Text = "Status: โหลด Config เดิมเรียบร�
 StatusLabel.Parent = MainFrame
 Instance.new("UICorner", StatusLabel).CornerRadius = UDim.new(0, 6)
 
-local PlayerBtn = Instance.new("TextButton")
+PlayerBtn = Instance.new("TextButton")
 PlayerBtn.Size = UDim2.new(1, -16, 0, 22)
 PlayerBtn.Position = UDim2.new(0, 8, 0, 68)
 PlayerBtn.BackgroundColor3 = Color3.fromRGB(45, 45, 52)
@@ -153,6 +164,7 @@ local function RefreshPlayers()
                 SelectedTargetPlayer = p
                 PlayerBtn.Text = "🎯 เป้าหมาย: " .. p.Name
                 PlayerScroll.Visible = false
+                SaveConfig()
             end)
         end
     end
@@ -160,6 +172,15 @@ local function RefreshPlayers()
 end
 
 PlayerBtn.MouseButton1Click:Connect(function() RefreshPlayers(); PlayerScroll.Visible = not PlayerScroll.Visible end)
+
+-- พยายามค้นหาผู้เล่นจากชื่อที่บันทึกไว้ตอนเปิดเกมใหม่
+if SavedTargetName ~= "" then
+    local foundP = Players:FindFirstChild(SavedTargetName)
+    if foundP then
+        SelectedTargetPlayer = foundP
+        PlayerBtn.Text = "🎯 เป้าหมาย: " .. foundP.Name
+    end
+end
 
 local CatContainer = Instance.new("Frame")
 CatContainer.Size = UDim2.new(1, -16, 0, 22)
@@ -178,6 +199,8 @@ local function CreateToggle(name, key, posX, width)
     btn.TextSize = 10
     btn.Parent = CatContainer
     Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 5)
+    
+    CategoryButtons[key] = btn
     
     btn.MouseButton1Click:Connect(function()
         SelectedCategories[key] = not SelectedCategories[key]
@@ -279,7 +302,7 @@ local function ProcessSingleTrade()
     return true
 end
 
-local AutoLoopBtn = Instance.new("TextButton")
+AutoLoopBtn = Instance.new("TextButton")
 AutoLoopBtn.Size = UDim2.new(1, -16, 0, 28)
 AutoLoopBtn.Position = UDim2.new(0, 8, 0, 152)
 AutoLoopBtn.BackgroundColor3 = Color3.fromRGB(40, 160, 70)
@@ -290,40 +313,49 @@ AutoLoopBtn.TextSize = 10
 AutoLoopBtn.Parent = MainFrame
 Instance.new("UICorner", AutoLoopBtn).CornerRadius = UDim.new(0, 6)
 
-AutoLoopBtn.MouseButton1Click:Connect(function()
-    if not SelectedTargetPlayer then
-        StatusLabel.Text = "❌ กรุณาเลือกผู้เล่นเป้าหมายก่อน!"
-        return
-    end
-
-    AutoLoopActive = not AutoLoopActive
+local function ToggleAutoLoop(state)
+    AutoLoopActive = state
+    AutoLoopSavedState = state
+    SaveConfig()
+    
     if AutoLoopActive then
         AutoLoopBtn.BackgroundColor3 = Color3.fromRGB(180, 60, 60)
         AutoLoopBtn.Text = "⏹ หยุดระบบ Safe Auto Loop (On)"
         
         task.spawn(function()
             while AutoLoopActive do
-                StatusLabel.Text = "📤 ส่งคำขอหา: " .. SelectedTargetPlayer.Name
-                local ok = pcall(function()
-                    local success = pcall(function() SendTradeReq:InvokeServer(SelectedTargetPlayer) end)
-                    if not success then SendTradeReq:InvokeServer(SelectedTargetPlayer.Name) end
-                end)
-                
-                if ok then
+                -- ตรวจสอบและค้นหาเป้าหมายใหม่หากหลุดหรือเข้าเกมใหม่
+                if not SelectedTargetPlayer and SavedTargetName ~= "" then
+                    SelectedTargetPlayer = Players:FindFirstChild(SavedTargetName)
+                    if SelectedTargetPlayer then
+                        PlayerBtn.Text = "🎯 เป้าหมาย: " .. SelectedTargetPlayer.Name
+                    end
+                end
+
+                if SelectedTargetPlayer then
+                    StatusLabel.Text = "📤 กำลังส่งคำขอหา: " .. SelectedTargetPlayer.Name
+                    
+                    pcall(function()
+                        local success = pcall(function() SendTradeReq:InvokeServer(SelectedTargetPlayer) end)
+                        if not success then SendTradeReq:InvokeServer(SelectedTargetPlayer.Name) end
+                    end)
+                    
+                    -- ระบบเช็คหน้าต่างเทรด (Timeout 5 วินาที ถ้าอีกฝ่ายไม่กดรับ จะวนส่งคำขอใหม่ทันที)
                     local waitTimer = 0
                     local tradeOpened = false
-                    while AutoLoopActive and not tradeOpened and waitTimer < 30 do
+                    while AutoLoopActive and not tradeOpened and waitTimer < 5 do
                         if IsTradeInterfaceOpen() then tradeOpened = true; break end
                         task.wait(0.5)
                         waitTimer = waitTimer + 0.5
                     end
+
                     if tradeOpened and AutoLoopActive then
                         ProcessSingleTrade()
                     end
                 else
-                    task.wait(3)
+                    StatusLabel.Text = "❌ ไม่พบผู้เล่นเป้าหมาย (กำลังรอผู้เล่นเข้าเกม)..."
                 end
-                task.wait(2)
+                task.wait(1.5)
             end
         end)
     else
@@ -331,6 +363,10 @@ AutoLoopBtn.MouseButton1Click:Connect(function()
         AutoLoopBtn.Text = "🔄 เริ่มระบบ Safe Auto Loop (Off)"
         StatusLabel.Text = "⏹ หยุดการทำงานเรียบร้อย"
     end
+end
+
+AutoLoopBtn.MouseButton1Click:Connect(function()
+    ToggleAutoLoop(not AutoLoopActive)
 end)
 
 local RarityLabel = Instance.new("TextLabel")
@@ -362,6 +398,8 @@ local function CreateRarityToggle(name, key, posX, posY, width, height)
     btn.Parent = RarityContainer
     Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 5)
     
+    RarityButtons[key] = btn
+    
     btn.MouseButton1Click:Connect(function()
         SelectedRarities[key] = not SelectedRarities[key]
         btn.BackgroundColor3 = SelectedRarities[key] and Color3.fromRGB(40, 120, 180) or Color3.fromRGB(60, 60, 70)
@@ -375,6 +413,14 @@ CreateRarityToggle("Rare", "rare", 210, 0, 114, 20)
 CreateRarityToggle("Epic", "epic", 0, 24, 100, 20)
 CreateRarityToggle("Legendary", "legendary", 105, 24, 100, 20)
 CreateRarityToggle("Ultimate", "ultimate", 210, 24, 114, 20)
+
+-- ถ้าเปิด Auto Loop ค้างไว้ หรือเข้าเกมใหม่แล้วมี Config เก่า ให้รันต่ออัตโนมัติทันที
+if AutoLoopSavedState then
+    task.spawn(function()
+        task.wait(1.5)
+        ToggleAutoLoop(true)
+    end)
+end
 
 local CloseBtn = Instance.new("TextButton")
 CloseBtn.Size = UDim2.new(1, -16, 0, 26)
