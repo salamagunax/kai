@@ -23,6 +23,9 @@ local AutoLoopBtn = nil
 local PlayerBtn = nil
 local SelectedTargetPlayer = nil
 
+-- =============================================
+-- Fixed Save & Load Config Logic
+-- =============================================
 local function SaveConfig()
     if writefile then
         local data = {
@@ -38,10 +41,12 @@ local function SaveConfig()
 end
 
 local function LoadConfig()
-    if readfile and pcall(function() readfile(ConfigFileName) end) then
+    if isfile and isfile(ConfigFileName) and readfile then
         pcall(function()
             local content = readfile(ConfigFileName)
-            local data = game:GetService("HttpService"):JSONEncode(content)
+            -- แก้ไขจาก JSONEncode เป็น JSONDecode
+            local data = game:GetService("HttpService"):JSONDecode(content)
+            
             if data and type(data) == "table" then
                 if data.Categories then SelectedCategories = data.Categories end
                 if data.Rarities then SelectedRarities = data.Rarities end
@@ -161,6 +166,7 @@ local function RefreshPlayers()
             b.Parent = PlayerScroll
             b.MouseButton1Click:Connect(function()
                 SelectedTargetPlayer = p
+                SavedTargetName = p.Name
                 PlayerBtn.Text = "🎯 เป้าหมาย: " .. p.Name
                 PlayerScroll.Visible = false
                 SaveConfig()
@@ -177,6 +183,8 @@ if SavedTargetName ~= "" then
     if foundP then
         SelectedTargetPlayer = foundP
         PlayerBtn.Text = "🎯 เป้าหมาย: " .. foundP.Name
+    else
+        PlayerBtn.Text = "🎯 เป้าหมายเดิม: " .. SavedTargetName .. " (ไม่อยู่ในเซิร์ฟ)"
     end
 end
 
@@ -213,54 +221,22 @@ CreateToggle("เกราะ", "chests", 160, 75)
 CreateToggle("สกิล", "abilities", 240, 75)
 
 local function IsEquipped(itemData)
-    if type(itemData) ~= "table" then
-        return false
-    end
-
+    if type(itemData) ~= "table" then return false end
     local equipped = itemData.equipped
+    if equipped == nil or equipped == false then return false end
 
-    -- ไม่มีข้อมูล equipped = ไม่ได้ใส่
-    if equipped == nil or equipped == false then
-        return false
-    end
-
-    -- equipped เป็น table เช่น
-    -- equipped[e] = false
-    -- equipped[q2] = false
-    -- equipped[e2] = true
-    -- equipped[q] = false
     if type(equipped) == "table" then
-        -- เช็คเฉพาะช่องสกิลทั้งหมด
-        local skillSlots = {
-            "e",
-            "q2",
-            "e2",
-            "q"
-        }
-
+        local skillSlots = { "e", "q2", "e2", "q" }
         for _, slot in ipairs(skillSlots) do
-            if equipped[slot] == true then
-                return true
-            end
+            if equipped[slot] == true then return true end
         end
-
-        -- เผื่อเกมใช้ key อื่นในอนาคต
         for _, value in pairs(equipped) do
-            if value == true then
-                return true
-            end
+            if value == true then return true end
         end
-
-        -- มี table แต่ทุกช่องเป็น false
         return false
     end
 
-    -- กรณี equipped เป็น boolean true โดยตรง
-    if equipped == true then
-        return true
-    end
-
-    return false
+    return equipped == true
 end
 
 local function TriggerAccept()
@@ -304,11 +280,9 @@ local function GetInventoryCount()
     return totalCount, 300
 end
 
--- ฟังก์ชันเช็คและขายไอเทมทิ้งจนกว่าจะเหลือ 299/300 (ป้องกันการขายมั่วโดยเช็คความแรร์/ประเภทที่ไม่ต้องการเก็บ)
 local function AutoClearSpaceTo299()
     local currentCount, maxCount = GetInventoryCount()
     
-    -- ถ้าเกิน 300 จะทำการวนขายออกจนกว่าจะเหลือ 299 หรือต่ำกว่า
     while currentCount >= 300 and AutoLoopActive do
         StatusLabel.Text = string.format("⚠️ เป๋าเกิน (%d/%d) กำลังเคลียร์ขายออกให้เหลือ 299...", currentCount, maxCount)
         local myInventory = invModule.GetPlayerInvy()
@@ -320,11 +294,9 @@ local function AutoClearSpaceTo299()
                     if not IsEquipped(itemData) then
                         local itemID = ParseItemID(itemKey)
                         if itemID then
-                            -- เช็คความแรร์ (ถ้าไม่อยู่ในความแรร์ที่เลือก ให้ขายทิ้งก่อนเพื่อความปลอดภัย)
                             local rarity = itemData.rarity or itemData.Rarity or "common"
                             local curRarity = tostring(rarity):lower()
                             
-                            -- ขายไอเทมที่อยู่นอกเหนือความแรร์ที่เลือก หรือถ้าเลือกหมดทุกอัน จะขายตัว Common/Uncommon ก่อนเพื่อความปลอดภัย
                             if not SelectedRarities[curRarity] or curRarity == "common" or curRarity == "uncommon" then
                                 local remoteCat = CategoryMap[catKey] or catKey
                                 local sellArgs = {
@@ -352,10 +324,9 @@ local function AutoClearSpaceTo299()
             if soldOne then break end
         end
         
-        -- อัพเดตตัวเลขกระเป๋าหลังขาย
         currentCount, maxCount = GetInventoryCount()
         task.wait(0.2)
-        if not soldOne then break end -- ป้องกันติด Loop ถ้าไม่มีของให้ขายแล้วจริงๆ
+        if not soldOne then break end
     end
 end
 
@@ -436,7 +407,6 @@ local function ToggleAutoLoop(state)
         
         task.spawn(function()
             while AutoLoopActive do
-                -- เช็คและเคลียร์พื้นที่กระเป๋าให้เหลือ 299 ก่อนเริ่มเทรดทุกรอบ
                 AutoClearSpaceTo299()
 
                 if not SelectedTargetPlayer and SavedTargetName ~= "" then
@@ -527,6 +497,14 @@ CreateRarityToggle("Rare", "rare", 210, 0, 114, 20)
 CreateRarityToggle("Epic", "epic", 0, 24, 100, 20)
 CreateRarityToggle("Legendary", "legendary", 105, 24, 100, 20)
 CreateRarityToggle("Ultimate", "ultimate", 210, 24, 114, 20)
+
+-- อัพเดทสถานะปุ่มใน UI ให้ตรงกับ Config ที่โหลดมา
+for key, btn in pairs(CategoryButtons) do
+    btn.BackgroundColor3 = SelectedCategories[key] and Color3.fromRGB(40, 140, 70) or Color3.fromRGB(60, 60, 70)
+end
+for key, btn in pairs(RarityButtons) do
+    btn.BackgroundColor3 = SelectedRarities[key] and Color3.fromRGB(40, 120, 180) or Color3.fromRGB(60, 60, 70)
+end
 
 if AutoLoopSavedState then
     task.spawn(function()
