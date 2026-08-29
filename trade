@@ -25,7 +25,7 @@ local PlayerBtn = nil
 local SelectedTargetPlayer = nil
 
 -- =============================================
--- Config Logic
+-- Config Logic (Fixed Save & Load)
 -- =============================================
 local function SaveConfig()
     if writefile then
@@ -45,7 +45,8 @@ local function LoadConfig()
     if isfile and isfile(ConfigFileName) and readfile then
         pcall(function()
             local content = readfile(ConfigFileName)
-            local data = game:GetService("HttpService"):JSONEncode(content)
+            -- แก้ไขจาก JSONEncode เป็น JSONDecode ให้สามารถอ่านค่า Config ได้ถูกต้อง
+            local data = game:GetService("HttpService"):JSONDecode(content)
             
             if data and type(data) == "table" then
                 if data.Categories then SelectedCategories = data.Categories end
@@ -240,7 +241,7 @@ local function IsEquipped(itemData)
 end
 
 -- ============================================================
--- Trade state helpers
+-- Trade state helpers & 5s Wait Logic
 -- ============================================================
 local function GetTradeGui()
     local playerGui = LocalPlayer:FindFirstChild("PlayerGui")
@@ -292,7 +293,7 @@ local function TriggerAccept()
     return ok
 end
 
--- กด Accept แล้วรอ 5 วินาทีเพื่อเช็คสถานะ หากยังไม่เปลี่ยนเป็น Cancel จะทำการยิงซ้ำ
+-- กด Accept และรอ 5 วินาทีเพื่อเช็คสถานะ Cancel
 local function EnsureOurTradeAccepted(maxAttempts)
     maxAttempts = maxAttempts or 3
 
@@ -307,7 +308,7 @@ local function EnsureOurTradeAccepted(maxAttempts)
         StatusLabel.Text = string.format("🔄 ยิง playerAcceptTrade (รอบที่ %d/%d)...", attempt, maxAttempts)
         TriggerAccept()
 
-        -- รอ 5 วินาทีให้ระบบตัวเกมตอบรับและอัปเดต UI ก่อนทำการเช็คใหม่
+        -- หน่วงรอ 5 วินาทีเพื่อเช็คการเปลี่ยนแปลงของ UI
         local waitStart = os.clock()
         while AutoLoopActive and IsTradeInterfaceOpen() and (os.clock() - waitStart) < 5 do
             if IsOurTradeAccepted() then
@@ -614,6 +615,7 @@ CreateRarityToggle("Epic", "epic", 0, 24, 100, 20)
 CreateRarityToggle("Legendary", "legendary", 105, 24, 100, 20)
 CreateRarityToggle("Ultimate", "ultimate", 210, 24, 114, 20)
 
+-- อัปเดตสีปุ่มตามค่า Config ที่โหลดมา
 for key, btn in pairs(CategoryButtons) do
     btn.BackgroundColor3 = SelectedCategories[key] and Color3.fromRGB(40, 140, 70) or Color3.fromRGB(60, 60, 70)
 end
