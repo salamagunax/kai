@@ -45,7 +45,7 @@ local function LoadConfig()
     if isfile and isfile(ConfigFileName) and readfile then
         pcall(function()
             local content = readfile(ConfigFileName)
-            local data = game:GetService("HttpService"):JSONDecode(content)
+            local data = game:GetService("HttpService"):JSONEncode(content)
             
             if data and type(data) == "table" then
                 if data.Categories then SelectedCategories = data.Categories end
@@ -292,55 +292,52 @@ local function TriggerAccept()
     return ok
 end
 
--- กด Accept จน GUI แสดง Cancel จริง ๆ
--- ไม่ถือว่าพร้อมเพียงเพราะ remote ถูกเรียกสำเร็จ
--- กด Remote playerAcceptTrade ซ้ำจนปุ่มของเราเปลี่ยนเป็น Cancel
--- ไม่อิง Accepted ของอีกฝ่าย
-local function EnsureOurTradeAccepted(timeout)
-    timeout = timeout or 8
-    local started = os.clock()
-    local lastClick = 0
+-- กด Accept แล้วรอ 5 วินาทีเพื่อเช็คสถานะ หากยังไม่เปลี่ยนเป็น Cancel จะทำการยิงซ้ำ
+local function EnsureOurTradeAccepted(maxAttempts)
+    maxAttempts = maxAttempts or 3
 
-    while AutoLoopActive and IsTradeInterfaceOpen() and (os.clock() - started) < timeout do
+    for attempt = 1, maxAttempts do
+        if not AutoLoopActive or not IsTradeInterfaceOpen() then return false end
+
         if IsOurTradeAccepted() then
             StatusLabel.Text = "✅ ขึ้น Cancel แล้ว — เราพร้อมเทรด"
             return true
         end
 
-        if os.clock() - lastClick >= 0.35 then
-            lastClick = os.clock()
-            TriggerAccept()
-        end
+        StatusLabel.Text = string.format("🔄 ยิง playerAcceptTrade (รอบที่ %d/%d)...", attempt, maxAttempts)
+        TriggerAccept()
 
-        task.wait(0.1)
+        -- รอ 5 วินาทีให้ระบบตัวเกมตอบรับและอัปเดต UI ก่อนทำการเช็คใหม่
+        local waitStart = os.clock()
+        while AutoLoopActive and IsTradeInterfaceOpen() and (os.clock() - waitStart) < 5 do
+            if IsOurTradeAccepted() then
+                StatusLabel.Text = "✅ ขึ้น Cancel แล้ว — เราพร้อมเทรด"
+                return true
+            end
+            task.wait(0.2)
+        end
     end
 
     return IsOurTradeAccepted()
 end
 
--- หลังจากทั้งคู่ Accepted แล้ว เกมจะใช้เวลาประมาณ 5 วิ
--- ระหว่างนั้นถ้า Accept กลับมา ให้กดใหม่จนกลับเป็น Cancel
 local function WaitUntilTradeFinished()
-    local lastAccept = 0
-
     while AutoLoopActive and IsTradeInterfaceOpen() do
         local ourAccepted = IsOurTradeAccepted()
 
         if not ourAccepted then
-            -- เราเป็นฝ่ายเริ่ม Accept และต้องคงสถานะ Cancel ไว้
-            if os.clock() - lastAccept >= 0.35 then
-                lastAccept = os.clock()
-                StatusLabel.Text = "🔄 ปุ่มยังเป็น Accept — ยิง playerAcceptTrade ใหม่..."
-                TriggerAccept()
+            StatusLabel.Text = "🔄 ปุ่มยังเป็น Accept — กำลังกด Accept ใหม่และรอ 5 วิ..."
+            TriggerAccept()
+            
+            local waitStart = os.clock()
+            while AutoLoopActive and IsTradeInterfaceOpen() and (os.clock() - waitStart) < 5 do
+                if IsOurTradeAccepted() then break end
+                task.wait(0.2)
             end
         else
-            -- Cancel แสดงแล้ว = เรา Accepted แล้ว
             StatusLabel.Text = "⏳ เรา Accepted แล้ว (Cancel) — รอ Trade สำเร็จ..."
+            task.wait(0.5)
         end
-
-        -- ไม่ใช้เวลา 5 วิเป็นตัวตัดสิน
-        -- ถือว่าเสร็จต่อเมื่อ tradingGui ปิดจริงเท่านั้น
-        task.wait(0.1)
     end
 
     if not IsTradeInterfaceOpen() then
@@ -478,17 +475,12 @@ local function ProcessSingleTrade()
     end
 
     if itemsAddedCount > 0 then
-        -- สำคัญ: ไม่รอ Accepted ของอีกฝ่าย
-        -- เราเป็นฝ่ายเริ่ม Accept เอง
         StatusLabel.Text = "📦 ใส่ของครบแล้ว — กำลังกด Accept ของเรา..."
 
         task.wait(0.5)
 
-        -- ยิงจนกว่าปุ่มของเราจะเปลี่ยนเป็น Cancel
-        EnsureOurTradeAccepted(10)
+        EnsureOurTradeAccepted(3)
 
-        -- จากตรงนี้รอจนหน้าต่างหายจริง
-        -- ถ้าปุ่มกลับเป็น Accept ก่อน Trade สำเร็จ จะยิงใหม่เอง
         if AutoLoopActive and IsTradeInterfaceOpen() then
             WaitUntilTradeFinished()
         end
@@ -523,7 +515,6 @@ local function ToggleAutoLoop(state)
             while AutoLoopActive do
                 AutoClearSpaceTo299()
 
-                -- Dynamic Re-Fetch Target: ตรวจสอบเป้าหมายจาก SavedTargetName ใหม่ทุกรอบ
                 local targetPlayer = nil
                 if SavedTargetName ~= "" then
                     targetPlayer = Players:FindFirstChild(SavedTargetName)
