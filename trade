@@ -24,7 +24,7 @@ local PlayerBtn = nil
 local SelectedTargetPlayer = nil
 
 -- =============================================
--- Fixed Save & Load Config Logic
+-- Config Logic
 -- =============================================
 local function SaveConfig()
     if writefile then
@@ -32,7 +32,7 @@ local function SaveConfig()
             Categories = SelectedCategories,
             Rarities = SelectedRarities,
             AutoLoopState = AutoLoopSavedState,
-            TargetName = SelectedTargetPlayer and SelectedTargetPlayer.Name or SavedTargetName
+            TargetName = SavedTargetName
         }
         pcall(function()
             writefile(ConfigFileName, game:GetService("HttpService"):JSONEncode(data))
@@ -44,7 +44,6 @@ local function LoadConfig()
     if isfile and isfile(ConfigFileName) and readfile then
         pcall(function()
             local content = readfile(ConfigFileName)
-            -- แก้ไขจาก JSONEncode เป็น JSONDecode
             local data = game:GetService("HttpService"):JSONDecode(content)
             
             if data and type(data) == "table" then
@@ -87,7 +86,7 @@ Instance.new("UICorner", MainFrame).CornerRadius = UDim.new(0, 8)
 local Title = Instance.new("TextLabel")
 Title.Size = UDim2.new(1, 0, 0, 28)
 Title.BackgroundTransparency = 1
-Title.Text = "⚡ Safe Auto Trade (Smart Auto-Sell to 299)"
+Title.Text = "⚡ Safe Auto Trade (Auto-Rejoin Target Supported)"
 Title.TextColor3 = Color3.fromRGB(255, 255, 255)
 Title.TextSize = 11
 Title.Font = Enum.Font.GothamBold
@@ -120,7 +119,7 @@ StatusLabel.Font = Enum.Font.Gotham
 StatusLabel.TextWrapped = true
 StatusLabel.TextXAlignment = Enum.TextXAlignment.Left
 StatusLabel.TextYAlignment = Enum.TextYAlignment.Top
-StatusLabel.Text = "Status: โหลด Config เดิมเรียบร้อยแล้ว"
+StatusLabel.Text = "Status: โหลดระบบเรียบร้อยแล้ว"
 StatusLabel.Parent = MainFrame
 Instance.new("UICorner", StatusLabel).CornerRadius = UDim.new(0, 6)
 
@@ -184,7 +183,7 @@ if SavedTargetName ~= "" then
         SelectedTargetPlayer = foundP
         PlayerBtn.Text = "🎯 เป้าหมาย: " .. foundP.Name
     else
-        PlayerBtn.Text = "🎯 เป้าหมายเดิม: " .. SavedTargetName .. " (ไม่อยู่ในเซิร์ฟ)"
+        PlayerBtn.Text = "🎯 เป้าหมาย: " .. SavedTargetName .. " (รอเข้าเกม...)"
     end
 end
 
@@ -409,20 +408,26 @@ local function ToggleAutoLoop(state)
             while AutoLoopActive do
                 AutoClearSpaceTo299()
 
-                if not SelectedTargetPlayer and SavedTargetName ~= "" then
-                    SelectedTargetPlayer = Players:FindFirstChild(SavedTargetName)
-                    if SelectedTargetPlayer then
-                        PlayerBtn.Text = "🎯 เป้าหมาย: " .. SelectedTargetPlayer.Name
-                    end
+                -- Dynamic Re-Fetch Target: ตรวจสอบเป้าหมายจาก SavedTargetName ใหม่ทุกรอบ
+                local targetPlayer = nil
+                if SavedTargetName ~= "" then
+                    targetPlayer = Players:FindFirstChild(SavedTargetName)
+                end
+                
+                if not targetPlayer and SelectedTargetPlayer and SelectedTargetPlayer.Parent == Players then
+                    targetPlayer = SelectedTargetPlayer
                 end
 
-                if SelectedTargetPlayer then
+                if targetPlayer then
+                    SelectedTargetPlayer = targetPlayer
+                    PlayerBtn.Text = "🎯 เป้าหมาย: " .. targetPlayer.Name
+                    
                     local cur, max = GetInventoryCount()
-                    StatusLabel.Text = string.format("📤 ส่งคำขอหา: %s [เป๋า: %d/%d]", SelectedTargetPlayer.Name, cur, max)
+                    StatusLabel.Text = string.format("📤 ส่งคำขอหา: %s [เป๋า: %d/%d]", targetPlayer.Name, cur, max)
                     
                     pcall(function()
-                        local success = pcall(function() SendTradeReq:InvokeServer(SelectedTargetPlayer) end)
-                        if not success then SendTradeReq:InvokeServer(SelectedTargetPlayer.Name) end
+                        local success = pcall(function() SendTradeReq:InvokeServer(targetPlayer) end)
+                        if not success then SendTradeReq:InvokeServer(targetPlayer.Name) end
                     end)
                     
                     local waitTimer = 0
@@ -437,7 +442,12 @@ local function ToggleAutoLoop(state)
                         ProcessSingleTrade()
                     end
                 else
-                    StatusLabel.Text = "❌ ไม่พบผู้เล่นเป้าหมาย (กำลังรอผู้เล่นเข้าเกม)..."
+                    if SavedTargetName ~= "" then
+                        StatusLabel.Text = string.format("❌ รอคุณ %s เข้าเซิร์ฟใหม่...", SavedTargetName)
+                        PlayerBtn.Text = string.format("🎯 เป้าหมาย: %s (รอเข้าเกม...)", SavedTargetName)
+                    else
+                        StatusLabel.Text = "❌ ยังไม่ได้เลือกผู้เล่นเป้าหมาย"
+                    end
                 end
                 task.wait(1.5)
             end
@@ -498,7 +508,6 @@ CreateRarityToggle("Epic", "epic", 0, 24, 100, 20)
 CreateRarityToggle("Legendary", "legendary", 105, 24, 100, 20)
 CreateRarityToggle("Ultimate", "ultimate", 210, 24, 114, 20)
 
--- อัพเดทสถานะปุ่มใน UI ให้ตรงกับ Config ที่โหลดมา
 for key, btn in pairs(CategoryButtons) do
     btn.BackgroundColor3 = SelectedCategories[key] and Color3.fromRGB(40, 140, 70) or Color3.fromRGB(60, 60, 70)
 end
