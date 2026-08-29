@@ -2,7 +2,6 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local CoreGui = game:GetService("CoreGui")
 local UserInputService = game:GetService("UserInputService")
-local Workspace = game:GetService("Workspace")
 local LocalPlayer = Players.LocalPlayer
 
 local invModule = require(LocalPlayer.PlayerScripts.Ui.inventory)
@@ -11,6 +10,7 @@ local AddItemEvent = remotes:WaitForChild("addItemToTradeFolder")
 local SendTradeReq = remotes:WaitForChild("sendTradeRequest")
 local AcceptRemote = remotes:WaitForChild("playerAcceptTrade")
 local SellItemEvent = remotes:WaitForChild("sellItemEvent")
+local TeleportToFriendEvent = remotes:WaitForChild("teleportToFriend") -- ✅ Remote สำหรับ Hop ตามเพื่อน
 
 local ConfigFileName = "CompactTradeUI_Config.json"
 local SelectedCategories = { weapons = true, helmets = true, chests = true, abilities = true }
@@ -25,7 +25,7 @@ local PlayerBtn = nil
 local SelectedTargetPlayer = nil
 
 -- =============================================
--- Config Logic (Fixed Save & Load)
+-- Config Logic
 -- =============================================
 local function SaveConfig()
     if writefile then
@@ -45,7 +45,6 @@ local function LoadConfig()
     if isfile and isfile(ConfigFileName) and readfile then
         pcall(function()
             local content = readfile(ConfigFileName)
-            -- แก้ไขจาก JSONEncode เป็น JSONDecode ให้สามารถอ่านค่า Config ได้ถูกต้อง
             local data = game:GetService("HttpService"):JSONDecode(content)
             
             if data and type(data) == "table" then
@@ -69,6 +68,34 @@ local CategoryMap = {
 
 local AutoLoopActive = false
 
+-- =============================================
+-- In-Game Friend Teleport (ใช้ Remote ของเกมโดยตรง)
+-- =============================================
+local isHopping = false
+local function HopToFriend(targetUsername)
+    if isHopping then return end
+    isHopping = true
+
+    -- แปลงชื่อเป้าหมายเป็น UserId (เช่น 5000587337)
+    local successId, targetUserId = pcall(function()
+        return Players:GetUserIdFromNameAsync(targetUsername)
+    end)
+    
+    if successId and targetUserId then
+        -- ยิง FireServer ไปที่ teleportToFriend โดยตรง
+        pcall(function()
+            TeleportToFriendEvent:FireServer(targetUserId)
+        end)
+        return true
+    end
+
+    isHopping = false
+    return false
+end
+
+-- =============================================
+-- UI Setup
+-- =============================================
 local guiName = "CompactTradeUI_Configurable"
 local uiParent = pcall(function() return CoreGui.Name end) and CoreGui or LocalPlayer:WaitForChild("PlayerGui")
 if uiParent:FindFirstChild(guiName) then uiParent[guiName]:Destroy() end
@@ -88,7 +115,7 @@ Instance.new("UICorner", MainFrame).CornerRadius = UDim.new(0, 8)
 local Title = Instance.new("TextLabel")
 Title.Size = UDim2.new(1, 0, 0, 28)
 Title.BackgroundTransparency = 1
-Title.Text = "⚡ Safe Auto Trade (Auto-Rejoin Target Supported)"
+Title.Text = "⚡ Safe Auto Trade (Remote Teleport Supported)"
 Title.TextColor3 = Color3.fromRGB(255, 255, 255)
 Title.TextSize = 11
 Title.Font = Enum.Font.GothamBold
@@ -185,7 +212,7 @@ if SavedTargetName ~= "" then
         SelectedTargetPlayer = foundP
         PlayerBtn.Text = "🎯 เป้าหมาย: " .. foundP.Name
     else
-        PlayerBtn.Text = "🎯 เป้าหมาย: " .. SavedTargetName .. " (รอเข้าเกม...)"
+        PlayerBtn.Text = "🎯 เป้าหมาย: " .. SavedTargetName .. " (รอ Hop/เข้าเกม...)"
     end
 end
 
@@ -240,9 +267,9 @@ local function IsEquipped(itemData)
     return equipped == true
 end
 
--- ============================================================
--- Trade state helpers & 5s Wait Logic
--- ============================================================
+-- =============================================
+-- Trade Helpers
+-- =============================================
 local function GetTradeGui()
     local playerGui = LocalPlayer:FindFirstChild("PlayerGui")
     return playerGui and playerGui:FindFirstChild("tradingGui")
@@ -283,17 +310,15 @@ local function IsOurTradeAccepted()
 end
 
 local function TriggerAccept()
-    local ok = pcall(function()
+    pcall(function()
         if AcceptRemote:IsA("RemoteEvent") then
             AcceptRemote:FireServer()
         elseif AcceptRemote:IsA("RemoteFunction") then
             AcceptRemote:InvokeServer()
         end
     end)
-    return ok
 end
 
--- กด Accept และรอ 5 วินาทีเพื่อเช็คสถานะ Cancel
 local function EnsureOurTradeAccepted(maxAttempts)
     maxAttempts = maxAttempts or 3
 
@@ -308,7 +333,6 @@ local function EnsureOurTradeAccepted(maxAttempts)
         StatusLabel.Text = string.format("🔄 ยิง playerAcceptTrade (รอบที่ %d/%d)...", attempt, maxAttempts)
         TriggerAccept()
 
-        -- หน่วงรอ 5 วินาทีเพื่อเช็คการเปลี่ยนแปลงของ UI
         local waitStart = os.clock()
         while AutoLoopActive and IsTradeInterfaceOpen() and (os.clock() - waitStart) < 5 do
             if IsOurTradeAccepted() then
@@ -477,9 +501,7 @@ local function ProcessSingleTrade()
 
     if itemsAddedCount > 0 then
         StatusLabel.Text = "📦 ใส่ของครบแล้ว — กำลังกด Accept ของเรา..."
-
         task.wait(0.5)
-
         EnsureOurTradeAccepted(3)
 
         if AutoLoopActive and IsTradeInterfaceOpen() then
@@ -549,14 +571,17 @@ local function ToggleAutoLoop(state)
                         ProcessSingleTrade()
                     end
                 else
+                    -- ไม่พบเป้าหมายในเซิร์ฟเวอร์ -> เรียกยิง Remote teleportToFriend
                     if SavedTargetName ~= "" then
-                        StatusLabel.Text = string.format("❌ รอคุณ %s เข้าเซิร์ฟใหม่...", SavedTargetName)
-                        PlayerBtn.Text = string.format("🎯 เป้าหมาย: %s (รอเข้าเกม...)", SavedTargetName)
+                        StatusLabel.Text = string.format("🚀 ยิง teleportToFriend หา %s...", SavedTargetName)
+                        PlayerBtn.Text = string.format("🎯 เป้าหมาย: %s (กำลังวาร์ป...)", SavedTargetName)
+                        
+                        HopToFriend(SavedTargetName)
                     else
                         StatusLabel.Text = "❌ ยังไม่ได้เลือกผู้เล่นเป้าหมาย"
                     end
                 end
-                task.wait(1.5)
+                task.wait(3)
             end
         end)
     else
@@ -615,7 +640,6 @@ CreateRarityToggle("Epic", "epic", 0, 24, 100, 20)
 CreateRarityToggle("Legendary", "legendary", 105, 24, 100, 20)
 CreateRarityToggle("Ultimate", "ultimate", 210, 24, 114, 20)
 
--- อัปเดตสีปุ่มตามค่า Config ที่โหลดมา
 for key, btn in pairs(CategoryButtons) do
     btn.BackgroundColor3 = SelectedCategories[key] and Color3.fromRGB(40, 140, 70) or Color3.fromRGB(60, 60, 70)
 end
