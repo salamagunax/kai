@@ -239,13 +239,15 @@ local function IsEquipped(itemData)
 end
 
 local function TriggerAccept()
-    pcall(function()
+    local ok = pcall(function()
+        if not AcceptRemote then return end
         if AcceptRemote:IsA("RemoteEvent") then
             AcceptRemote:FireServer()
         elseif AcceptRemote:IsA("RemoteFunction") then
             AcceptRemote:InvokeServer()
         end
     end)
+    return ok
 end
 
 local function ParseItemID(itemKey)
@@ -260,6 +262,95 @@ local function IsTradeInterfaceOpen()
         return true
     end
     return false
+end
+
+-- อ้างอิงปุ่มจริงของหน้าต่างเทรด
+
+local function GetTradeButtons()
+    local acceptButton, cancelButton
+    pcall(function()
+        local playerGui = LocalPlayer:FindFirstChild("PlayerGui")
+        local tradeGui = playerGui and playerGui:FindFirstChild("tradingGui")
+        local mainBackground = tradeGui and tradeGui:FindFirstChild("mainBackground")
+        local innerBackground = mainBackground and mainBackground:FindFirstChild("innerBackground")
+        local yourTradeFrame = innerBackground and innerBackground:FindFirstChild("yourTradeFrame")
+        if yourTradeFrame then
+            acceptButton = yourTradeFrame:FindFirstChild("acceptButton")
+            cancelButton = yourTradeFrame:FindFirstChild("cancelButton")
+        end
+    end)
+    return acceptButton, cancelButton
+end
+
+local function IsUsableButton(button)
+    if not button or not button:IsA("GuiButton") then return false end
+    if not button.Visible then return false end
+    if button.AbsoluteSize.X <= 1 or button.AbsoluteSize.Y <= 1 then return false end
+    return true
+end
+
+-- กด Accept ซ้ำจนกว่าปุ่มของเราจะเปลี่ยนเป็น Cancel
+local function MakeSureAccepted()
+    local startTime = os.clock()
+    local maxWait = 30
+    local attempts = 0
+
+    while AutoLoopActive and IsTradeInterfaceOpen() and (os.clock() - startTime) < maxWait do
+        local acceptButton, cancelButton = GetTradeButtons()
+
+        if IsUsableButton(cancelButton) then
+            StatusLabel.Text = string.format("✅ เรา Accepted แล้ว (Cancel) | กด %d ครั้ง", attempts)
+            return true
+        end
+
+        if IsUsableButton(acceptButton) then
+            attempts = attempts + 1
+            TriggerAccept()
+            StatusLabel.Text = string.format("🔄 ปุ่มยังเป็น Accept -> กดใหม่ (%d)", attempts)
+        else
+            StatusLabel.Text = "⏳ รอปุ่ม Accept/Cancel อัปเดต..."
+        end
+
+        task.wait(0.35)
+    end
+
+    local _, cancelButton = GetTradeButtons()
+    if IsUsableButton(cancelButton) then
+        StatusLabel.Text = "✅ เรา Accepted แล้ว (Cancel)"
+        return true
+    end
+
+    if IsTradeInterfaceOpen() then
+        StatusLabel.Text = "⚠️ ยังไม่ขึ้น Cancel - จะไม่เริ่มรอบใหม่จนกว่าจะพร้อม"
+    end
+    return false
+end
+
+-- รอจน tradingGui ปิดจริง หลังจากทั้งสองฝ่าย Accepted
+local function WaitUntilTradeFinished()
+    local elapsed = 0
+
+    while AutoLoopActive and IsTradeInterfaceOpen() do
+        local acceptButton, cancelButton = GetTradeButtons()
+
+        if IsUsableButton(acceptButton) and not IsUsableButton(cancelButton) then
+            TriggerAccept()
+            StatusLabel.Text = "🔄 Accept หลุดระหว่างรอ -> กดกลับเป็น Cancel..."
+        elseif IsUsableButton(cancelButton) then
+            if elapsed < 5 then
+                StatusLabel.Text = string.format("⏳ ทั้งคู่พร้อมแล้ว รอเทรดสำเร็จ... %.1fs", 5 - elapsed)
+            else
+                StatusLabel.Text = "⏳ รอหน้าต่างเทรดปิด..."
+            end
+        else
+            StatusLabel.Text = "⏳ รอสถานะเทรดอัปเดต..."
+        end
+
+        task.wait(0.25)
+        elapsed = elapsed + 0.25
+    end
+
+    return not IsTradeInterfaceOpen()
 end
 
 local function GetInventoryCount()
@@ -371,16 +462,28 @@ local function ProcessSingleTrade()
     end
 
     if itemsAddedCount > 0 then
-        StatusLabel.Text = "✅ ใส่ของครบแล้ว กำลังกด Accept..."
+        StatusLabel.Text = "✅ ใส่ของครบแล้ว กำลังตรวจปุ่ม Accept..."
         task.wait(0.6)
-        TriggerAccept()
+
+        local accepted = MakeSureAccepted()
+        if not accepted then
+            -- อย่าส่ง Trade Request ใหม่ทับหน้าต่างเดิม
+            -- รอให้หน้าต่างเดิมปิดก่อน แล้วค่อยให้ Auto Loop เริ่มรอบใหม่
+            while AutoLoopActive and IsTradeInterfaceOpen() do
+                task.wait(0.5)
+            end
+            return false
+        end
+
+        -- ยังไม่ถือว่าเสร็จจนกว่าหน้าต่างเทรดจะหายจริง
+        local finished = WaitUntilTradeFinished()
+        if finished then
+            StatusLabel.Text = "✅ เทรดเสร็จสิ้น - หน้าต่างหายแล้ว"
+        end
     else
         StatusLabel.Text = "⚠️ ไม่พบไอเทมที่ตรงเงื่อนไขความแรร์ในรอบนี้"
     end
 
-    while AutoLoopActive and IsTradeInterfaceOpen() do
-        task.wait(0.5)
-    end
     return true
 end
 
