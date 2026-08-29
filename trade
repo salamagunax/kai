@@ -41,7 +41,7 @@ local function LoadConfig()
     if readfile and pcall(function() readfile(ConfigFileName) end) then
         pcall(function()
             local content = readfile(ConfigFileName)
-            local data = game:GetService("HttpService"):JSONDecode(content)
+            local data = game:GetService("HttpService"):JSONEncode(content)
             if data and type(data) == "table" then
                 if data.Categories then SelectedCategories = data.Categories end
                 if data.Rarities then SelectedRarities = data.Rarities end
@@ -213,12 +213,53 @@ CreateToggle("เกราะ", "chests", 160, 75)
 CreateToggle("สกิล", "abilities", 240, 75)
 
 local function IsEquipped(itemData)
-    if type(itemData) ~= "table" then return false end
-    local eq = itemData.equipped
-    if eq ~= nil and eq ~= false then
-        if type(eq) == "table" and next(eq) == nil then return false end
+    if type(itemData) ~= "table" then
+        return false
+    end
+
+    local equipped = itemData.equipped
+
+    -- ไม่มีข้อมูล equipped = ไม่ได้ใส่
+    if equipped == nil or equipped == false then
+        return false
+    end
+
+    -- equipped เป็น table เช่น
+    -- equipped[e] = false
+    -- equipped[q2] = false
+    -- equipped[e2] = true
+    -- equipped[q] = false
+    if type(equipped) == "table" then
+        -- เช็คเฉพาะช่องสกิลทั้งหมด
+        local skillSlots = {
+            "e",
+            "q2",
+            "e2",
+            "q"
+        }
+
+        for _, slot in ipairs(skillSlots) do
+            if equipped[slot] == true then
+                return true
+            end
+        end
+
+        -- เผื่อเกมใช้ key อื่นในอนาคต
+        for _, value in pairs(equipped) do
+            if value == true then
+                return true
+            end
+        end
+
+        -- มี table แต่ทุกช่องเป็น false
+        return false
+    end
+
+    -- กรณี equipped เป็น boolean true โดยตรง
+    if equipped == true then
         return true
     end
+
     return false
 end
 
