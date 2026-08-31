@@ -2,6 +2,8 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local CoreGui = game:GetService("CoreGui")
 local UserInputService = game:GetService("UserInputService")
+local TeleportService = game:GetService("TeleportService")
+local HttpService = game:GetService("HttpService")
 local LocalPlayer = Players.LocalPlayer
 
 local invModule = require(LocalPlayer.PlayerScripts.Ui.inventory)
@@ -10,7 +12,7 @@ local AddItemEvent = remotes:WaitForChild("addItemToTradeFolder")
 local SendTradeReq = remotes:WaitForChild("sendTradeRequest")
 local AcceptRemote = remotes:WaitForChild("playerAcceptTrade")
 local SellItemEvent = remotes:WaitForChild("sellItemEvent")
-local TeleportToFriendEvent = remotes:WaitForChild("teleportToFriend") -- ✅ Remote สำหรับ Hop ตามเพื่อน
+local TeleportToFriendEvent = remotes:WaitForChild("teleportToFriend")
 
 local ConfigFileName = "CompactTradeUI_Config.json"
 local SelectedCategories = { weapons = true, helmets = true, chests = true, abilities = true }
@@ -36,7 +38,7 @@ local function SaveConfig()
             TargetName = SavedTargetName
         }
         pcall(function()
-            writefile(ConfigFileName, game:GetService("HttpService"):JSONEncode(data))
+            writefile(ConfigFileName, HttpService:JSONEncode(data))
         end)
     end
 end
@@ -45,7 +47,8 @@ local function LoadConfig()
     if isfile and isfile(ConfigFileName) and readfile then
         pcall(function()
             local content = readfile(ConfigFileName)
-            local data = game:GetService("HttpService"):JSONDecode(content)
+            local data = HttpService:JSONEncode(content) -- Fixed load json
+            data = HttpService:JSONDecode(content)
             
             if data and type(data) == "table" then
                 if data.Categories then SelectedCategories = data.Categories end
@@ -67,25 +70,68 @@ local CategoryMap = {
 }
 
 local AutoLoopActive = false
+local HopAttemptCount = 0
 
 -- =============================================
--- In-Game Friend Teleport (ใช้ Remote ของเกมโดยตรง)
+-- Smart Teleport Logic (Remote + Fallback Server Hop)
 -- =============================================
 local isHopping = false
+
+local function RandomServerHop()
+    StatusLabel.Text = "🔄 กำลัง Hop เปลี่ยนเซิร์ฟเวอร์เพื่อ Refresh แคชเพื่อน..."
+    local placeId = game.PlaceId
+    local servers = {}
+    local req = request or http_request or (syn and syn.request)
+    
+    if req then
+        pcall(function()
+            local res = req({
+                Url = string.format("https://games.roblox.com/v1/games/%d/servers/0?sortOrder=Asc&limit=100", placeId),
+                Method = "GET"
+            })
+            if res and res.Body then
+                local data = HttpService:JSONDecode(res.Body)
+                if data and data.data then
+                    for _, s in ipairs(data.data) do
+                        if type(s) == "table" and s.playing < s.maxPlayers and s.id ~= game.JobId then
+                            table.insert(servers, s.id)
+                        end
+                    end
+                end
+            end
+        end)
+    end
+    
+    if #servers > 0 then
+        TeleportService:TeleportToPlaceInstance(placeId, servers[math.random(1, #servers)], LocalPlayer)
+    else
+        TeleportService:Teleport(placeId, LocalPlayer)
+    end
+end
+
 local function HopToFriend(targetUsername)
     if isHopping then return end
     isHopping = true
 
-    -- แปลงชื่อเป้าหมายเป็น UserId (เช่น 5000587337)
     local successId, targetUserId = pcall(function()
         return Players:GetUserIdFromNameAsync(targetUsername)
     end)
     
     if successId and targetUserId then
-        -- ยิง FireServer ไปที่ teleportToFriend โดยตรง
+        HopAttemptCount = HopAttemptCount + 1
+        
+        -- ถ้าลองยิง Remote แล้วเกิน 3 ครั้งแต่ยังไม่เจอเพื่อน ให้ Hop เปลี่ยนเซิร์ฟเวอร์เพื่อล้างแคช
+        if HopAttemptCount > 3 then
+            RandomServerHop()
+            return true
+        end
+
         pcall(function()
             TeleportToFriendEvent:FireServer(targetUserId)
         end)
+        
+        task.wait(2)
+        isHopping = false
         return true
     end
 
@@ -115,7 +161,7 @@ Instance.new("UICorner", MainFrame).CornerRadius = UDim.new(0, 8)
 local Title = Instance.new("TextLabel")
 Title.Size = UDim2.new(1, 0, 0, 28)
 Title.BackgroundTransparency = 1
-Title.Text = "⚡ Safe Auto Trade (Remote Teleport Supported)"
+Title.Text = "⚡ Safe Auto Trade (Auto Refresh Supported)"
 Title.TextColor3 = Color3.fromRGB(255, 255, 255)
 Title.TextSize = 11
 Title.Font = Enum.Font.GothamBold
@@ -138,7 +184,7 @@ UserInputService.InputChanged:Connect(function(input)
     end
 end)
 
-local StatusLabel = Instance.new("TextLabel")
+StatusLabel = Instance.new("TextLabel")
 StatusLabel.Size = UDim2.new(1, -16, 0, 35)
 StatusLabel.Position = UDim2.new(0, 8, 0, 28)
 StatusLabel.BackgroundColor3 = Color3.fromRGB(35, 35, 42)
@@ -548,6 +594,7 @@ local function ToggleAutoLoop(state)
                 end
 
                 if targetPlayer then
+                    HopAttemptCount = 0 -- เจอเพื่อนในเซิร์ฟ รีเซ็ตตัวนับ
                     SelectedTargetPlayer = targetPlayer
                     PlayerBtn.Text = "🎯 เป้าหมาย: " .. targetPlayer.Name
                     
@@ -571,9 +618,8 @@ local function ToggleAutoLoop(state)
                         ProcessSingleTrade()
                     end
                 else
-                    -- ไม่พบเป้าหมายในเซิร์ฟเวอร์ -> เรียกยิง Remote teleportToFriend
                     if SavedTargetName ~= "" then
-                        StatusLabel.Text = string.format("🚀 ยิง teleportToFriend หา %s...", SavedTargetName)
+                        StatusLabel.Text = string.format("🚀 ยิง teleportToFriend หา %s (%d/3)...", SavedTargetName, HopAttemptCount + 1)
                         PlayerBtn.Text = string.format("🎯 เป้าหมาย: %s (กำลังวาร์ป...)", SavedTargetName)
                         
                         HopToFriend(SavedTargetName)
